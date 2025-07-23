@@ -21,7 +21,7 @@ class TestDataIntegrity(unittest.TestCase):
         """Create synthetic test data."""
         # Create synthetic time series
         n_points = 10000
-        freq = '6T'  # 6 minutes
+        freq = '6min'  # 6 minutes
         
         date_range = pd.date_range(
             start='2024-01-01', 
@@ -123,7 +123,7 @@ class TestDataIntegrity(unittest.TestCase):
         
         # Check that filled data has regular intervals
         time_diffs = df_filled['collect_time'].diff().dropna()
-        expected_diff = pd.Timedelta('6T')
+        expected_diff = pd.Timedelta('6min')
         
         # All differences should be the expected interval
         self.assertTrue((time_diffs == expected_diff).all())
@@ -231,7 +231,7 @@ class TestProductionReadiness(unittest.TestCase):
         
         # Create some data and fit scalers
         df = pd.DataFrame({
-            'collect_time': pd.date_range('2024-01-01', periods=1000, freq='6T'),
+            'collect_time': pd.date_range('2024-01-01', periods=1000, freq='6min'),
             'value': np.random.randn(1000)
         })
         
@@ -259,7 +259,7 @@ class TestProductionReadiness(unittest.TestCase):
         
         # Simulate training
         train_df = pd.DataFrame({
-            'collect_time': pd.date_range('2024-01-01', periods=1000, freq='6T'),
+            'collect_time': pd.date_range('2024-01-01', periods=1000, freq='6min'),
             'value': 5 + 0.5 * np.sin(np.linspace(0, 20*np.pi, 1000)) + 0.1 * np.random.randn(1000)
         })
         
@@ -267,7 +267,7 @@ class TestProductionReadiness(unittest.TestCase):
         
         # Simulate new data for inference
         new_data = pd.DataFrame({
-            'collect_time': pd.date_range('2024-01-10', periods=200, freq='6T'),
+            'collect_time': pd.date_range('2024-01-10', periods=200, freq='6min'),
             'value': 5 + 0.5 * np.sin(np.linspace(0, 4*np.pi, 200)) + 0.1 * np.random.randn(200)
         })
         

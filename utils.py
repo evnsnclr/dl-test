@@ -67,7 +67,7 @@ def prepare_data_for_model(
     seq_len: int = 60, 
     test_size: float = 0.2, 
     prediction_horizon: int = 1,
-    time_column: str = 'seconds',
+    time_column: str = 'collect_time',
     value_column: str = 'value',
     use_legacy: bool = True  # For backward compatibility
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, MinMaxScaler]:
@@ -88,6 +88,15 @@ def prepare_data_for_model(
     # Validate inputs
     if len(df) < seq_len + prediction_horizon:
         raise ValueError(f"Data length ({len(df)}) must be at least seq_len + prediction_horizon ({seq_len + prediction_horizon})")
+    
+    # Handle time column - support both 'seconds' and 'collect_time'
+    if time_column not in df.columns:
+        if 'collect_time' in df.columns:
+            time_column = 'collect_time'
+        elif 'seconds' in df.columns:
+            time_column = 'seconds'
+        else:
+            raise KeyError(f"Neither '{time_column}' nor 'collect_time' nor 'seconds' found in DataFrame columns: {list(df.columns)}")
     
     # Sort by time
     df = df.sort_values(time_column).reset_index(drop=True)

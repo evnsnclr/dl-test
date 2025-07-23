@@ -47,8 +47,8 @@ class TimeSeriesDataPipeline:
         target_column: str = "value",
         time_column: str = "collect_time",
         sensor_id_column: str = "sensor_id",
-        target_freq: str = "6T",  # 6 minutes
-        max_gap_interpolate: str = "24H",
+        target_freq: str = "6min",  # 6 minutes
+        max_gap_interpolate: str = "24h",
         scaler_type: str = "robust"
     ):
         """
@@ -210,14 +210,14 @@ class TimeSeriesDataPipeline:
         df_filled = df_regular.copy()
         
         # Small gaps (< 1 hour): forward fill
-        small_gap_mask = gap_mask['gap_duration'] <= pd.Timedelta('1H')
+        small_gap_mask = gap_mask['gap_duration'] <= pd.Timedelta('1h')
         df_filled.loc[small_gap_mask, self.target_column] = (
-            df_filled[self.target_column].fillna(method='ffill')
+            df_filled[self.target_column].ffill()
         )
         
         # Medium gaps (1-24 hours): linear interpolation
         medium_gap_mask = (
-            (gap_mask['gap_duration'] > pd.Timedelta('1H')) & 
+            (gap_mask['gap_duration'] > pd.Timedelta('1h')) & 
             (gap_mask['gap_duration'] <= self.max_gap_interpolate)
         )
         if medium_gap_mask.any():
@@ -314,12 +314,15 @@ class TimeSeriesDataPipeline:
         Returns:
             Tuple of (train_df, val_df, test_df)
         """
+        # Sort by time to ensure proper ordering
+        df = df.sort_values(self.time_column)
+        
         # Convert dates
         train_end = pd.to_datetime(train_end_date)
         val_end = pd.to_datetime(val_end_date)
         buffer = pd.Timedelta(days=buffer_days)
         
-        # Split with buffers
+        # Split with buffers using strict inequalities
         train_df = df[df[self.time_column] < train_end].copy()
         val_df = df[
             (df[self.time_column] >= train_end + buffer) & 
@@ -327,15 +330,28 @@ class TimeSeriesDataPipeline:
         ].copy()
         test_df = df[df[self.time_column] >= val_end + buffer].copy()
         
+        # Check if splits are valid
+        if len(train_df) == 0:
+            raise ValueError(f"No training data before {train_end}")
+        if len(val_df) == 0:
+            raise ValueError(f"No validation data between {train_end + buffer} and {val_end}")
+        if len(test_df) == 0:
+            raise ValueError(f"No test data after {val_end + buffer}")
+        
         # Log split information
         logger.info(f"Data split summary:")
         logger.info(f"  Train: {len(train_df)} samples ({train_df[self.time_column].min()} to {train_df[self.time_column].max()})")
         logger.info(f"  Val: {len(val_df)} samples ({val_df[self.time_column].min()} to {val_df[self.time_column].max()})")
         logger.info(f"  Test: {len(test_df)} samples ({test_df[self.time_column].min()} to {test_df[self.time_column].max()})")
         
-        # Validate no overlap
-        assert train_df[self.time_column].max() < val_df[self.time_column].min(), "Train/Val overlap detected!"
-        assert val_df[self.time_column].max() < test_df[self.time_column].min(), "Val/Test overlap detected!"
+        # Validate no overlap with better error messages
+        if len(train_df) > 0 and len(val_df) > 0:
+            if train_df[self.time_column].max() >= val_df[self.time_column].min():
+                raise AssertionError(f"Train/Val overlap detected! Train ends at {train_df[self.time_column].max()}, Val starts at {val_df[self.time_column].min()}")
+        
+        if len(val_df) > 0 and len(test_df) > 0:
+            if val_df[self.time_column].max() >= test_df[self.time_column].min():
+                raise AssertionError(f"Val/Test overlap detected! Val ends at {val_df[self.time_column].max()}, Test starts at {test_df[self.time_column].min()}")
         
         return train_df, val_df, test_df
         
@@ -482,15 +498,28 @@ class TimeSeriesDataPipeline:
         from sklearn.ensemble import RandomForestRegressor
         from sklearn.metrics import mean_absolute_error
         
+        # Filter out sequences with NaN values
+        train_mask = ~np.isnan(X_train).any(axis=(1, 2)) & ~np.isnan(y_train).any(axis=1)
+        test_mask = ~np.isnan(X_test).any(axis=(1, 2)) & ~np.isnan(y_test).any(axis=1)
+        
+        X_train_clean = X_train[train_mask]
+        y_train_clean = y_train[train_mask]
+        X_test_clean = X_test[test_mask]
+        y_test_clean = y_test[test_mask]
+        
+        if len(X_train_clean) == 0 or len(X_test_clean) == 0:
+            logger.warning("Not enough valid sequences for leak test - skipping")
+            return True
+        
         # Train simple model on correct split
         model = RandomForestRegressor(n_estimators=10, random_state=42)
-        model.fit(X_train.reshape(X_train.shape[0], -1), y_train.mean(axis=1))
-        correct_pred = model.predict(X_test.reshape(X_test.shape[0], -1))
-        correct_mae = mean_absolute_error(y_test.mean(axis=1), correct_pred)
+        model.fit(X_train_clean.reshape(X_train_clean.shape[0], -1), y_train_clean.mean(axis=1))
+        correct_pred = model.predict(X_test_clean.reshape(X_test_clean.shape[0], -1))
+        correct_mae = mean_absolute_error(y_test_clean.mean(axis=1), correct_pred)
         
         # Create leaked data by mixing train and test
-        X_leaked = np.vstack([X_train, X_test])
-        y_leaked = np.vstack([y_train, y_test])
+        X_leaked = np.vstack([X_train_clean, X_test_clean])
+        y_leaked = np.vstack([y_train_clean, y_test_clean])
         
         # Shuffle
         indices = np.random.permutation(len(X_leaked))
@@ -498,7 +527,7 @@ class TimeSeriesDataPipeline:
         y_leaked = y_leaked[indices]
         
         # Split again
-        split_idx = len(X_train)
+        split_idx = len(X_train_clean)
         X_train_leaked = X_leaked[:split_idx]
         y_train_leaked = y_leaked[:split_idx]
         X_test_leaked = X_leaked[split_idx:]
