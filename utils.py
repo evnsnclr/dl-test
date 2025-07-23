@@ -69,7 +69,6 @@ def prepare_data_for_model(
     prediction_horizon: int = 1,
     time_column: str = 'collect_time',
     value_column: str = 'value',
-    use_legacy: bool = True  # For backward compatibility
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, MinMaxScaler]:
     """
     Prepare pandas DataFrame for time series prediction models.
