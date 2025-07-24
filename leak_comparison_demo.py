@@ -115,12 +115,19 @@ def evaluate_new_pipeline(df, seq_len=720, pred_horizon=240):
     train_scaled = pipeline.transform_features(train_df, feature_cols)
     test_scaled = pipeline.transform_features(test_df, feature_cols)
     
+    # Debug: Check for NaN values after scaling
+    train_nan_count = train_scaled['value'].isna().sum()
+    test_nan_count = test_scaled['value'].isna().sum()
+    print(f"\nNaN statistics after scaling:")
+    print(f"  Train: {train_nan_count}/{len(train_scaled)} ({train_nan_count/len(train_scaled)*100:.1f}%)")
+    print(f"  Test: {test_nan_count}/{len(test_scaled)} ({test_nan_count/len(test_scaled)*100:.1f}%)")
+    
     # Create sequences with NO OVERLAP in test
     X_train, y_train = pipeline.create_sequences(
-        train_scaled, seq_len, pred_horizon, stride=seq_len//4
+        train_scaled, seq_len, pred_horizon, stride=seq_len//4, features=['value']
     )
     X_test, y_test = pipeline.create_sequences(
-        test_scaled, seq_len, pred_horizon, stride=pred_horizon  # No overlap!
+        test_scaled, seq_len, pred_horizon, stride=pred_horizon, features=['value']  # No overlap!
     )
     
     print(f"\nNew pipeline statistics:")
@@ -128,6 +135,16 @@ def evaluate_new_pipeline(df, seq_len=720, pred_horizon=240):
     print(f"Test samples: {len(X_test)} (non-overlapping)")
     print(f"Train period: {train_df['collect_time'].min()} to {train_df['collect_time'].max()}")
     print(f"Test period: {test_df['collect_time'].min()} to {test_df['collect_time'].max()}")
+    
+    # Check if we have enough samples
+    if len(X_train) == 0:
+        print("\nERROR: No valid training sequences after removing NaN values!")
+        print("This typically happens when there are too many gaps in the data.")
+        return 0, 0, 0, np.array([]), np.array([]), scalers['value']
+    
+    if len(X_test) == 0:
+        print("\nERROR: No valid test sequences after removing NaN values!")
+        return 0, 0, 0, np.array([]), np.array([]), scalers['value']
     
     # Convert to tensors
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -149,13 +166,25 @@ def evaluate_new_pipeline(df, seq_len=720, pred_horizon=240):
         optimizer.zero_grad()
         
         batch_size = min(32, len(X_train))
-        idx = np.random.choice(len(X_train), batch_size)
-        batch_X = X_train[idx]
-        batch_y = y_train[idx]
+        if batch_size < 4:
+            print(f"\nWARNING: Very few training samples ({len(X_train)}), using full batch")
+            batch_X = X_train
+            batch_y = y_train
+        else:
+            idx = np.random.choice(len(X_train), batch_size, replace=False)
+            batch_X = X_train[idx]
+            batch_y = y_train[idx]
         
         outputs = model(batch_X)
         loss = criterion(outputs, batch_y)
+        
+        # Check for NaN loss
+        if torch.isnan(loss):
+            print(f"WARNING: NaN loss detected at epoch {epoch}")
+            break
+            
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
         optimizer.step()
         
         if epoch % 5 == 0:
@@ -166,6 +195,11 @@ def evaluate_new_pipeline(df, seq_len=720, pred_horizon=240):
     with torch.no_grad():
         test_pred = model(X_test).cpu().numpy()
         test_true = y_test.cpu().numpy()
+    
+    # Check for valid predictions
+    if np.isnan(test_pred).any() or np.isnan(test_true).any():
+        print("\nERROR: NaN values in predictions!")
+        return 0, 0, 0, test_pred, test_true, scalers['value']
     
     # Metrics
     mae = mean_absolute_error(test_true[:, 0], test_pred[:, 0])
@@ -252,13 +286,18 @@ def main():
     print(f"  - Non-overlapping test windows")
     print(f"  - Scaler fitted on training only")
     print(f"  - Chronological split with gaps")
-    print(f"  → Realistic error: MAE = {new_mae:.4f}")
     
-    print(f"\nDifference: {((new_mae - old_mae) / old_mae * 100):.1f}% higher (realistic) error")
-    print("\nThis demonstrates why the old pipeline would fail in production!")
-    
-    # Plot comparison
-    plot_comparison([old_mae, old_mse, old_r2], [new_mae, new_mse, new_r2])
+    if new_mae > 0:
+        print(f"  → Realistic error: MAE = {new_mae:.4f}")
+        print(f"\nDifference: {((new_mae - old_mae) / old_mae * 100):.1f}% higher (realistic) error")
+        print("\nThis demonstrates why the old pipeline would fail in production!")
+        
+        # Plot comparison
+        plot_comparison([old_mae, old_mse, old_r2], [new_mae, new_mse, new_r2])
+    else:
+        print(f"  → Could not compute metrics due to insufficient data after NaN removal")
+        print("\nThis highlights another issue with real-world data: gaps can severely")
+        print("limit the amount of usable training data for time series models.")
 
 
 if __name__ == "__main__":

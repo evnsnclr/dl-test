@@ -387,16 +387,27 @@ class TimeSeriesDataPipeline:
         data = df[features].values
         
         X, y = [], []
+        sequences_with_nan = 0
         
         # Create sequences with specified stride
         for i in range(0, len(data) - seq_len - pred_horizon + 1, stride):
-            X.append(data[i:i + seq_len])
-            y.append(data[i + seq_len:i + seq_len + pred_horizon, 0])  # Only target column for y
+            x_seq = data[i:i + seq_len]
+            y_seq = data[i + seq_len:i + seq_len + pred_horizon, 0]  # Only target column for y
+            
+            # Skip sequences with NaN values
+            if np.isnan(x_seq).any() or np.isnan(y_seq).any():
+                sequences_with_nan += 1
+                continue
+                
+            X.append(x_seq)
+            y.append(y_seq)
             
         X = np.array(X)
         y = np.array(y)
         
         logger.info(f"Created {len(X)} sequences with shape X: {X.shape}, y: {y.shape}")
+        if sequences_with_nan > 0:
+            logger.warning(f"Skipped {sequences_with_nan} sequences containing NaN values")
         
         return X, y
         
